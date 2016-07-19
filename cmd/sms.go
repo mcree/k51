@@ -16,9 +16,10 @@ package cmd
 
 import (
 	"fmt"
-
-	"github.com/spf13/cobra"
 	"github.com/fsnotify/fsnotify"
+	"github.com/mcree/k51/backend"
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 	"log"
 	"time"
 )
@@ -27,7 +28,7 @@ import (
 var smsCmd = &cobra.Command{
 	Use:   "sms",
 	Short: "Queue management for smstools",
-	Long: ``,
+	Long:  ``,
 	Run: func(cmd *cobra.Command, args []string) {
 		// TODO: Work your own magic here
 		fmt.Println("sms called")
@@ -57,6 +58,9 @@ func watchSms() {
 	}
 	defer watcher.Close()
 
+	mq := backend.MQClient()
+	mq.Publish(viper.GetString("mqtt.channel") + "/sms", 0, false, "test message").WaitTimeout(time.Second * 2)
+
 	done := make(chan bool)
 	go func() {
 		for {
@@ -72,7 +76,9 @@ func watchSms() {
 		}
 	}()
 
+
 	go func() {
+
 		time.Sleep(60 * time.Second)
 		done <- true
 	}()
