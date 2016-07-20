@@ -1,0 +1,12 @@
+mqtt:
+  url: tcp://localhost:1883
+  clientid: k51-localhost
+  channel: k51
+  store: /tmp/k51/mqtt
+
+smstools:
+  incoming: /var/spool/sms/incoming
+  outgoing: /var/spool/sms/outgoing
+  failed: /var/spool/sms/failed
+  retry: 3
+

@@ -15,24 +15,24 @@
 package cmd
 
 import (
-	"fmt"
-	"github.com/fsnotify/fsnotify"
 	"github.com/mcree/k51/backend"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"log"
 	"time"
+	"log"
+	"os"
+	"github.com/eclipse/paho.mqtt.golang"
 )
 
 // smsCmd represents the sms command
 var smsCmd = &cobra.Command{
-	Use:   "sms",
+	Use:   "smstools",
 	Short: "Queue management for smstools",
-	Long:  ``,
+	Long:  `Connects incoming and outgoing smstools3 daemon queues to MQTT`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// TODO: Work your own magic here
-		fmt.Println("sms called")
-		watchSms()
+		log.Println("smstools queue management started")
+		Run()
 	},
 }
 
@@ -51,41 +51,24 @@ func init() {
 
 }
 
-func watchSms() {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer watcher.Close()
+func Run() {
+	inChannel := viper.GetString("mqtt.channel") + "/sms/in"
+	outChannel := viper.GetString("mqtt.channel") + "/sms/out"
 
 	mq := backend.MQClient()
 	mq.Publish(viper.GetString("mqtt.channel") + "/sms", 0, false, "test message").WaitTimeout(time.Second * 2)
 
-	done := make(chan bool)
-	go func() {
-		for {
-			select {
-			case event := <-watcher.Events:
-				log.Println("event:", event)
-				if event.Op&fsnotify.Write == fsnotify.Write {
-					log.Println("modified file:", event.Name)
-				}
-			case err := <-watcher.Errors:
-				log.Println("error:", err)
-			}
-		}
-	}()
+	outd, _ := backend.NewQueueDirWriter(viper.GetString("smstools.outgoing"),"sms_","")
 
+	backend.NewQueueDirReader(viper.GetString("smstools.incoming"), func(c backend.QueueItem) {
+		log.Println("Incoming sms: "+c.Name)
+		mq.Publish(inChannel, 2, false, c.Payload)
+		os.Remove(c.Name)
+	})
 
-	go func() {
+	mq.Subscribe(outChannel, 0, func(client mqtt.Client, msg mqtt.Message) {
+		name, _ := outd.Write(msg.Payload())
+		log.Println("Outgoing sms: "+name)
+	} )
 
-		time.Sleep(60 * time.Second)
-		done <- true
-	}()
-
-	err = watcher.Add("c:\\foo")
-	if err != nil {
-		log.Fatal(err)
-	}
-	<-done
 }
