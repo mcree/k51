@@ -15,24 +15,27 @@
 package cmd
 
 import (
-	"log"
+	log "github.com/Sirupsen/logrus"
 	"os"
 	"os/signal"
 	"syscall"
+	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"time"
+	"github.com/mcree/k51/backend"
 )
 
-type DispatcherFunc func(chan bool) error
+type DispatcherFunc func(*Dispatcher) error
 
-type DispatcherCommand struct {
-	fn   DispatcherFunc
-	done chan(bool)
+type Dispatcher struct {
+	RunGroup     sync.WaitGroup
+	CleanupGroup sync.WaitGroup
+	Err error
 }
 
-var commands []DispatcherCommand
-var done chan bool = make(chan bool)
+var dispatcher Dispatcher
 
 // dispatchCmd represents the dispatch command
 var dispatchCmd = &cobra.Command{
@@ -40,30 +43,47 @@ var dispatchCmd = &cobra.Command{
 	Short: "Dispatch services based on the config file.",
 	Long: ``,
 	Run: func(cmd *cobra.Command, args []string) {
-		log.Println("dispatch starting")
-		defer log.Println("dispatch exiting on signal (eg. Ctrl-C)")
+		log := log.WithField("prefix", "dispatch")
+		log.Info("starting")
+		defer log.Info("exiting")
+		dispatcher.RunGroup.Add(1)
 		srvs := viper.GetStringSlice("dispatch.services")
-		log.Println("services:", srvs)
+		log.Info("services: ", srvs)
 		for s := range srvs {
 			switch srvs[s] {
 			case "smstools":
-				spawn(DispatcherFunc(smstools))
+				spawn(srvs[s], DispatcherFunc(smstools))
 			}
 		}
-		log.Println("dispatch done - Ctrl-C to exit")
-		<- done
-		done <- true
+		time.Sleep(time.Second)
+		log.Info("running - Ctrl-C to exit")
+		dispatcher.RunGroup.Wait()
+		log.Info("stopping - waiting for cleanup")
+		dispatcher.CleanupGroup.Wait()
+		backend.MQCleanup()
+		log.Info("cleanup done - exiting")
 	},
 }
 
-func spawn(fn DispatcherFunc) {
-	dc := DispatcherCommand{fn: fn}
-	dc.done = make(chan bool)
-	go dc.fn(dc.done)
-	commands = append(commands, dc)
+func spawn(service string, fn DispatcherFunc) {
+	log := log.WithField("prefix", "dispatch").WithField("service", service)
+	go func() {
+		log.Info("spawning")
+		err := fn(&dispatcher)
+		if err != nil {
+			log.Error("spawn error: ",err)
+			dispatcher.Err = err
+			dispatcher.RunGroup.Done()
+			return
+		}
+		log.Info("stopping")
+		dispatcher.CleanupGroup.Done()
+	}()
+	dispatcher.CleanupGroup.Add(1)
 }
 
 func init() {
+	log := log.WithField("prefix", "dispatch")
 	RootCmd.AddCommand(dispatchCmd)
 
 	c := make(chan os.Signal, 1)
@@ -71,13 +91,8 @@ func init() {
 	signal.Notify(c, syscall.SIGTERM)
 	go func(){
 		<-c
-		for c := range commands {
-			commands[c].done <- true
-			<- commands[c].done
-		}
-		done <- true
-		<- done
-		os.Exit(1)
+		log.Warn("signal caught - dispatching stop request")
+		dispatcher.RunGroup.Done()
 	}()
 
 	// Here you will define your flags and configuration settings.

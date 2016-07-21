@@ -3,7 +3,7 @@ package backend
 import (
 	"github.com/fsnotify/fsnotify"
 	"io/ioutil"
-	"log"
+	log "github.com/Sirupsen/logrus"
 	"time"
 	"os"
 	"github.com/jehiah/go-strftime"
@@ -42,6 +42,7 @@ func init() {
 // NewQueueDirReader starts monitoring a given directory for incoming files.
 // Item handler is notified on new files.
 func NewQueueDirReader(path string, handler ItemHandler) (*QueueDirReader, error) {
+	log := log.WithField("prefix", "queuedir-writer").WithField("path", path)
 
 	qd := QueueDirReader{
 		path:            path,
@@ -79,7 +80,9 @@ func NewQueueDirReader(path string, handler ItemHandler) (*QueueDirReader, error
 					}
 				}
 			case err := <-qd.watcher.Errors:
-				log.Println("error:", err)
+				if err != nil {
+					log.Error(err)
+				}
 			case <-qd.closed:
 				break WatchLoop
 			}
@@ -89,14 +92,14 @@ func NewQueueDirReader(path string, handler ItemHandler) (*QueueDirReader, error
 	// start watching dir
 	err = qd.watcher.Add(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("QueueDirReader %v: %v", path, err)
 	}
 
 	// process files that are already present
 	var files []os.FileInfo
 	files, err = ioutil.ReadDir(qd.path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("QueueDirReader %v: %v", path, err)
 	}
 	for _, f := range files {
 		// emulate fsnotify event for existing files
@@ -111,6 +114,9 @@ func (qd *QueueDirReader) Close() error {
 	var err error
 	err = qd.watcher.Close()
 	qd.closed <- true
+	if err != nil {
+		err = fmt.Errorf("QueueDirReader %v: %v", qd.path, err)
+	}
 	return err
 }
 
@@ -135,12 +141,12 @@ func (qd *QueueDirWriter) Write(payload []byte) (string, error) {
 	hash += "_" + fmt.Sprintf("%x_%x", time.Now().UnixNano()&0xffffff, rand.Uint32())
 	fileName := qd.path + string(os.PathSeparator) + qd.namePrefix + hash + qd.nameSuffix
 	err := ioutil.WriteFile(fileName, payload, qd.fileMode)
-	return fileName, err
+	return fileName, fmt.Errorf("QueueDirWriter %v: %v", qd.path, err)
 }
 
 // Close queue dir writer - subsequent attempts to use the dir result in a panic
 func (qd *QueueDirWriter) Close() error {
 	var err error
-	return err
+	return  fmt.Errorf("QueueDirWriter %v: %v", qd.path, err)
 }
 

@@ -19,9 +19,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"time"
-	"log"
+	log "github.com/Sirupsen/logrus"
 	"os"
 	"github.com/eclipse/paho.mqtt.golang"
+	"fmt"
 )
 
 // smsCmd represents the sms command
@@ -30,7 +31,7 @@ var smsCmd = &cobra.Command{
 	Short: "Queue management for smstools",
 	Long:  `Connects incoming and outgoing smstools3 daemon queues to MQTT`,
 	Run: func(cmd *cobra.Command, args []string) {
-		smstools(make(chan bool)) // no exit
+		smstools(&Dispatcher{}) // no exit
 	},
 }
 
@@ -49,42 +50,46 @@ func init() {
 
 }
 
-func smstools(done chan bool) (error) {
-	log.Println("smstools queue management starting")
-	defer log.Println("smstools queue management exiting")
+func smstools(dg *Dispatcher) (error) {
+	log := log.WithField("prefix", "smstools")
+	log.Println("queue management starting")
+	defer log.Println("queue management exiting")
 
 	var err error
 
 	inChannel := viper.GetString("mqtt.channel") + "/sms/in"
 	outChannel := viper.GetString("mqtt.channel") + "/sms/out"
+	inDir := viper.GetString("smstools.incoming")
+	outDir := viper.GetString("smstools.outgoing")
 
 	mq := backend.MQClient()
 	mq.Publish(viper.GetString("mqtt.channel") + "/sms", 0, false, "test message").WaitTimeout(time.Second * 2)
 
-	outd, err := backend.NewQueueDirWriter(viper.GetString("smstools.outgoing"),"sms_","")
+	outd, err := backend.NewQueueDirWriter(outDir,"sms_","")
 	if err != nil {
-		return err
+		log.Error(err)
+		return fmt.Errorf("smstools: %v", err)
 	}
 	defer outd.Close()
 
-	ind, err := backend.NewQueueDirReader(viper.GetString("smstools.incoming"), func(c backend.QueueItem) {
+	ind, err := backend.NewQueueDirReader(inDir, func(c backend.QueueItem) {
 		log.Println("Incoming sms: "+c.Name)
 		mq.Publish(inChannel, 2, false, c.Payload)
 		os.Remove(c.Name)
 	})
 	if err != nil {
-		return err
+		log.Error(err)
+		return fmt.Errorf("smstools: %v", err)
 	}
 	defer ind.Close()
 
 	mq.Subscribe(outChannel, 0, func(client mqtt.Client, msg mqtt.Message) {
 		name, _ := outd.Write(msg.Payload())
-		log.Println("Outgoing sms: "+name)
+		log.Info("Outgoing sms: ", name)
 	} )
 	defer mq.Unsubscribe(outChannel)
 
-	<- done
-	done <- true
+	dg.RunGroup.Wait()
 
 	return err
 }
