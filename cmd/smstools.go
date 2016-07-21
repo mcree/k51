@@ -30,9 +30,7 @@ var smsCmd = &cobra.Command{
 	Short: "Queue management for smstools",
 	Long:  `Connects incoming and outgoing smstools3 daemon queues to MQTT`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// TODO: Work your own magic here
-		log.Println("smstools queue management started")
-		Run()
+		smstools(make(chan bool)) // no exit
 	},
 }
 
@@ -51,24 +49,42 @@ func init() {
 
 }
 
-func Run() {
+func smstools(done chan bool) (error) {
+	log.Println("smstools queue management starting")
+	defer log.Println("smstools queue management exiting")
+
+	var err error
+
 	inChannel := viper.GetString("mqtt.channel") + "/sms/in"
 	outChannel := viper.GetString("mqtt.channel") + "/sms/out"
 
 	mq := backend.MQClient()
 	mq.Publish(viper.GetString("mqtt.channel") + "/sms", 0, false, "test message").WaitTimeout(time.Second * 2)
 
-	outd, _ := backend.NewQueueDirWriter(viper.GetString("smstools.outgoing"),"sms_","")
+	outd, err := backend.NewQueueDirWriter(viper.GetString("smstools.outgoing"),"sms_","")
+	if err != nil {
+		return err
+	}
+	defer outd.Close()
 
-	backend.NewQueueDirReader(viper.GetString("smstools.incoming"), func(c backend.QueueItem) {
+	ind, err := backend.NewQueueDirReader(viper.GetString("smstools.incoming"), func(c backend.QueueItem) {
 		log.Println("Incoming sms: "+c.Name)
 		mq.Publish(inChannel, 2, false, c.Payload)
 		os.Remove(c.Name)
 	})
+	if err != nil {
+		return err
+	}
+	defer ind.Close()
 
 	mq.Subscribe(outChannel, 0, func(client mqtt.Client, msg mqtt.Message) {
 		name, _ := outd.Write(msg.Payload())
 		log.Println("Outgoing sms: "+name)
 	} )
+	defer mq.Unsubscribe(outChannel)
 
+	<- done
+	done <- true
+
+	return err
 }

@@ -10,3 +10,6 @@ smstools:
   failed: /var/spool/sms/failed
   retry: 3
 
+dispatch:
+  services:
+    - smstools
